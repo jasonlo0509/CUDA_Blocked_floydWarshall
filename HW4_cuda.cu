@@ -57,6 +57,10 @@ __global__ void floyd_phaseI(int k, int *devMap, int B, int d_N){
 	__shared__ int shared_mem[32][32];
 	int i = threadIdx.y;
 	int j = threadIdx.x;
+	int num_iter = B;
+	if((d_N- B * k) < B){
+		num_iter = d_N - B*k;
+	}
 	int d_i = k * B + i;
 	int d_j = k * B + j;
 	if(d_i < d_N && d_j < d_N){
@@ -64,7 +68,7 @@ __global__ void floyd_phaseI(int k, int *devMap, int B, int d_N){
 		shared_mem[i][j] = devMap[g_mem_index];
 		__syncthreads();
 
-		for(int l = 0; l < B; l++){
+		for(int l = 0; l < num_iter; l++){
 			if (shared_mem[i][l] + shared_mem[l][j] < shared_mem[i][j]){
 				shared_mem[i][j] = shared_mem[i][l] + shared_mem[l][j];
 			}
@@ -72,13 +76,17 @@ __global__ void floyd_phaseI(int k, int *devMap, int B, int d_N){
 		devMap[g_mem_index] = shared_mem[i][j];
 	}
 }
-// add memory boundary
+
 __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 	if(blockIdx.x != k){
 		__shared__ int shared_mem[32][32], shared_buffer[32][32];
 		int i = threadIdx.y;
 		int j = threadIdx.x;
 		int d_i, d_j;
+		int num_iter = B;
+		if((d_N - B * k) < B){
+			num_iter = d_N - B*k;
+		}
 		if(blockIdx.y == 0){ 	// row
 			d_i = k * B + threadIdx.y;
 			d_j = B * blockIdx.x + threadIdx.x;
@@ -87,22 +95,22 @@ __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 			d_i = B * blockIdx.x + threadIdx.y;
 			d_j = k * B + threadIdx.x;
 		}
+		int g_mem_index = i * d_N + j;
+		shared_mem[i][j] = devMap[g_mem_index];
 		if(d_i < d_N && d_j < d_N){
-			int g_mem_index = i * d_N + j;
-			shared_mem[i][j] = devMap[g_mem_index];
 			g_mem_index = d_i * d_N + d_j;
 			shared_buffer[i][j] = devMap[g_mem_index];
 			__syncthreads();
 
 			if(blockIdx.y == 0){
-				for(int l = 0; l < B; l++){
+				for(int l = 0; l < num_iter; l++){
 					if(shared_mem[i][l] + shared_buffer[l][j] < shared_buffer[i][j]){
 						shared_buffer[i][j] = shared_mem[i][l] + shared_buffer[l][j];
 					}
 				}
 			}
 			else{
-				for(int l = 0; l < B; l++){
+				for(int l = 0; l < num_iter; l++){
 					if(shared_buffer[i][l] + shared_mem[l][j] < shared_buffer[i][j]){
 						shared_buffer[i][j] = shared_buffer[i][l] + shared_mem[l][j];
 					}
@@ -121,9 +129,13 @@ __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N){
 		int d_j = blockDim.x * blockIdx.x + threadIdx.x;
 		int i = threadIdx.y;
 		int j = threadIdx.x;
-		if(d_i < d_N && d_j < d_N && (base + i) < d_N && (base + j) < d_N){
+		int num_iter = B;
+		if((d_N- B * k) < B){
+			num_iter = d_N - B*k;
+		}
+		if((base + i) < d_N && (base + j) < d_N){
 			int col_base = (base + i) * d_N + d_j;
-			int row_base = d_i * d_N + base + j;
+			int row_base = d_i * d_N + (base + j);
 			base = d_i * d_N + d_j;
 			d_r[i][j] = devMap[col_base];
 			d_c[i][j] = devMap[row_base];
@@ -131,7 +143,7 @@ __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N){
 			__syncthreads();
 
 			int newD;
-			for (int t = 0; t < B; t++) {
+			for (int t = 0; t < num_iter; t++) {
 				newD = d_c[i][t] + d_r[t][j];
 				if (newD < oldD)
 					oldD = newD;
@@ -186,7 +198,9 @@ int main(int argc, char** argv) {
 	cudaMemcpy(devMap, Hostmap, sizeof(int) * N * N, cudaMemcpyHostToDevice);
 	Block_floydWarshall(devMap, B);
 	cudaMemcpy(Hostmap, devMap, sizeof(int) * N * N, cudaMemcpyDeviceToHost);
-	printf("%d %d %d \n", Hostmap[0], Hostmap[1], Hostmap[2]);
+	for(int i = 0; i < N*N; i++)
+		printf("%d ", Hostmap[i]);
+	printf("\n");
 	cudaError_t err = cudaGetLastError();
 	if (err != cudaSuccess) 
 		    printf("Error: %s\n", cudaGetErrorString(err));

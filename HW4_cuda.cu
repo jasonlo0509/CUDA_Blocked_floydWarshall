@@ -55,10 +55,12 @@ int ceil(int a, int b){
 
 __global__ void floyd_phaseI(int k, int *devMap, int B, int d_N){
 	__shared__ int shared_mem[32][32];
-	int i = k * B + threadIdx.y;
-	int j = k * B + threadIdx.x;
-	if(i < d_N && j < d_N){
-		int g_mem_index = i * d_N + j;
+	int i = threadIdx.y;
+	int j = threadIdx.x;
+	int d_i = k * B + i;
+	int d_j = k * B + j;
+	if(d_i < d_N && d_j < d_N){
+		int g_mem_index = d_i * d_N + d_j;
 		shared_mem[i][j] = devMap[g_mem_index];
 		__syncthreads();
 
@@ -74,38 +76,40 @@ __global__ void floyd_phaseI(int k, int *devMap, int B, int d_N){
 __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 	if(blockIdx.x != k){
 		__shared__ int shared_mem[32][32], shared_buffer[32][32];
-		int i = k * B + threadIdx.y;
-		int j = k * B + threadIdx.x;
-		int g_mem_index = i * d_N + j;
-		shared_mem[i][j] = devMap[g_mem_index];
-
+		int i = threadIdx.y;
+		int j = threadIdx.x;
+		int d_i, d_j;
 		if(blockIdx.y == 0){ 	// row
-			i = k * B + threadIdx.y;
-			j = B * blockIdx.x + threadIdx.x;
+			d_i = k * B + threadIdx.y;
+			d_j = B * blockIdx.x + threadIdx.x;
 		}
 		else { 					// col
-			i = B * blockIdx.x + threadIdx.y;
-			j = k * B + threadIdx.x;
+			d_i = B * blockIdx.x + threadIdx.y;
+			d_j = k * B + threadIdx.x;
 		}
-		g_mem_index = i * d_N + j;
-		shared_buffer[i][j] = devMap[g_mem_index];
-		__syncthreads();
+		if(d_i < d_N && d_j < d_N){
+			int g_mem_index = i * d_N + j;
+			shared_mem[i][j] = devMap[g_mem_index];
+			g_mem_index = d_i * d_N + d_j;
+			shared_buffer[i][j] = devMap[g_mem_index];
+			__syncthreads();
 
-		if(blockIdx.y == 0){
-			for(int l = 0; l < B; l++){
-				if(shared_mem[i][l] + shared_buffer[l][j] < shared_buffer[i][j]){
-					shared_buffer[i][j] = shared_mem[i][l] + shared_buffer[l][j];
+			if(blockIdx.y == 0){
+				for(int l = 0; l < B; l++){
+					if(shared_mem[i][l] + shared_buffer[l][j] < shared_buffer[i][j]){
+						shared_buffer[i][j] = shared_mem[i][l] + shared_buffer[l][j];
+					}
 				}
 			}
-		}
-		else{
-			for(int l = 0; l < B; l++){
-				if(shared_buffer[i][l] + shared_mem[l][j] < shared_buffer[i][j]){
-					shared_buffer[i][j] = shared_mem[i][l] + shared_buffer[l][j];
+			else{
+				for(int l = 0; l < B; l++){
+					if(shared_buffer[i][l] + shared_mem[l][j] < shared_buffer[i][j]){
+						shared_buffer[i][j] = shared_buffer[i][l] + shared_mem[l][j];
+					}
 				}
 			}
+			devMap[g_mem_index] = shared_buffer[i][j];
 		}
-		devMap[g_mem_index] = shared_buffer[i][j];
 	}
 }
 
@@ -117,50 +121,52 @@ __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N){
 		int d_j = blockDim.x * blockIdx.x + threadIdx.x;
 		int i = threadIdx.y;
 		int j = threadIdx.x;
-		int col_base = (base + i) * d_N + d_j;
-		int row_base = d_i * d_N + base + j;
-		base = d_i * d_N + d_j;
-		d_r[i][j] = devMap[col_base];
-		d_c[i][j] = devMap[row_base];
-		int oldD = devMap[base];
-		__syncthreads();
+		if(d_i < d_N && d_j < d_N && (base + i) < d_N && (base + j) < d_N){
+			int col_base = (base + i) * d_N + d_j;
+			int row_base = d_i * d_N + base + j;
+			base = d_i * d_N + d_j;
+			d_r[i][j] = devMap[col_base];
+			d_c[i][j] = devMap[row_base];
+			int oldD = devMap[base];
+			__syncthreads();
 
-		int newD;
-		for (int t = 0; t < B; t++) {
-			newD = d_c[i][t] + d_r[t][j];
-			if (newD < oldD)
-				oldD = newD;
+			int newD;
+			for (int t = 0; t < B; t++) {
+				newD = d_c[i][t] + d_r[t][j];
+				if (newD < oldD)
+					oldD = newD;
+			}
+			devMap[base] = oldD;
 		}
-		devMap[base] = oldD;
 	}
 }
 
 void Block_floydWarshall(int* devMap, int B){
 	int k;
 	int round = ceil(N, B);
-	int BLKSZ;
+	int BLKSIZE;
 	if(round == 1){
-    	BLKSZ = N;
+    	BLKSIZE = N;
     }
     else{
-    	BLKSZ = round;
+    	BLKSIZE = B;
     }
-    dim3 blockSize1(BLKSZ, BLKSZ);
+    dim3 blockSize1(BLKSIZE, BLKSIZE);
 
-    dim3 gridSize2(N / BLKSZ, 2);
-    dim3 blockSize2(BLKSZ, BLKSZ);
+    dim3 gridSize2(round, 2);
+    dim3 blockSize2(BLKSIZE, BLKSIZE);
 
-	dim3 gridSize3(N / BLKSZ, N / BLKSZ);
-	dim3 blockSize3(BLKSZ, BLKSZ);
+	dim3 gridSize3(round, round);
+	dim3 blockSize3(BLKSIZE, BLKSIZE);
     
     int d_N = N;
 
-    printf("N/BLKSZ = %d",N/BLKSZ);
+    printf("BLKSIZE = %d",BLKSIZE);
     printf("round = %d\n", round);
     for(k = 0; k<round; k++){
-    	floyd_phaseI<<<1, blockSize1>>>(k, devMap, BLKSZ, d_N);
-    	//floyd_phaseII<<<gridSize2, blockSize2>>>(k, devMap, BLKSZ, d_N);
-    	//floyd_phaseIII<<<gridSize3, blockSize3>>>(k, devMap, BLKSZ, d_N);
+    	floyd_phaseI<<<1, blockSize1>>>(k, devMap, BLKSIZE, d_N);
+    	floyd_phaseII<<<gridSize2, blockSize2>>>(k, devMap, BLKSIZE, d_N);
+    	floyd_phaseIII<<<gridSize3, blockSize3>>>(k, devMap, BLKSIZE, d_N);
     }
 }
 

@@ -72,6 +72,7 @@ __global__ void floyd_phaseI(int k, int *devMap, int B, int d_N){
 			if (shared_mem[i][l] + shared_mem[l][j] < shared_mem[i][j]){
 				shared_mem[i][j] = shared_mem[i][l] + shared_mem[l][j];
 			}
+			__syncthreads();
 		}
 		devMap[g_mem_index] = shared_mem[i][j];
 	}
@@ -89,15 +90,16 @@ __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 		}
 		if(blockIdx.y == 0){ 	// row
 			d_i = k * B + threadIdx.y;
-			d_j = B * blockIdx.x + threadIdx.x;
+			d_j = B * blockIdx.x + threadIdx.x;//problem
 		}
 		else { 					// col
 			d_i = B * blockIdx.x + threadIdx.y;
 			d_j = k * B + threadIdx.x;
 		}
-		int g_mem_index = i * d_N + j;
-		shared_mem[i][j] = devMap[g_mem_index];
+		
 		if(d_i < d_N && d_j < d_N){
+			int g_mem_index = (i+B*k) * d_N + (j+B*k);
+			shared_mem[i][j] = devMap[g_mem_index];
 			g_mem_index = d_i * d_N + d_j;
 			shared_buffer[i][j] = devMap[g_mem_index];
 			__syncthreads();
@@ -107,6 +109,7 @@ __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 					if(shared_mem[i][l] + shared_buffer[l][j] < shared_buffer[i][j]){
 						shared_buffer[i][j] = shared_mem[i][l] + shared_buffer[l][j];
 					}
+					__syncthreads();
 				}
 			}
 			else{
@@ -114,6 +117,7 @@ __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 					if(shared_buffer[i][l] + shared_mem[l][j] < shared_buffer[i][j]){
 						shared_buffer[i][j] = shared_buffer[i][l] + shared_mem[l][j];
 					}
+					__syncthreads();
 				}
 			}
 			devMap[g_mem_index] = shared_buffer[i][j];
@@ -133,7 +137,7 @@ __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N){
 		if((d_N- B * k) < B){
 			num_iter = d_N - B*k;
 		}
-		if((base + i) < d_N && (base + j) < d_N){
+		if((base + i) < d_N && (base + j) < d_N &&  d_i < d_N && d_j < d_N){
 			int col_base = (base + i) * d_N + d_j;
 			int row_base = d_i * d_N + (base + j);
 			base = d_i * d_N + d_j;
@@ -147,6 +151,7 @@ __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N){
 				newD = d_c[i][t] + d_r[t][j];
 				if (newD < oldD)
 					oldD = newD;
+				__syncthreads();
 			}
 			devMap[base] = oldD;
 		}
@@ -198,9 +203,13 @@ int main(int argc, char** argv) {
 	cudaMemcpy(devMap, Hostmap, sizeof(int) * N * N, cudaMemcpyHostToDevice);
 	Block_floydWarshall(devMap, B);
 	cudaMemcpy(Hostmap, devMap, sizeof(int) * N * N, cudaMemcpyDeviceToHost);
-	for(int i = 0; i < N*N; i++)
+	cudaFree(devMap);
+	/*for(int i = 0; i < N*N; i++)
 		printf("%d ", Hostmap[i]);
 	printf("\n");
+	*/
+	printf("Hostmap\n");
+	printf("%d %d\n", Hostmap[1], Hostmap[N*N-2]);
 	cudaError_t err = cudaGetLastError();
 	if (err != cudaSuccess) 
 		    printf("Error: %s\n", cudaGetErrorString(err));

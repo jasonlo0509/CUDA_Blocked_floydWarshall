@@ -27,7 +27,7 @@ int readInput(const char* infile, int B){
 	pFile = fopen ( infile , "r" );
 	int m;
 	fscanf(pFile, "%d %d", &N, &m);
-	if(ceil(N, B) == N/B ){
+	if(ceil(N, B) == N/B || ceil(N, B) == 1){
 		width = N;
 		cudaMallocHost(&Hostmap, (width*width)*sizeof(int));
 	}

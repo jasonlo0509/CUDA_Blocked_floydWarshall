@@ -22,11 +22,13 @@ int ceil(int a, int b){
 
 int readInput(const char* infile, int B){
 	FILE * pFile;
-	int in, counter=0;
+	int in;
 	int i, j, width;
 	pFile = fopen ( infile , "r" );
-	fscanf (pFile, "%d", &in);
-	N = in;
+	int m;
+	fscanf(pFile, "%d %d", &N, &m);
+	//fscanf (pFile, "%d", &in);
+	//N = in;
 	if(ceil(N, B) == N/B ){
 		width = N;
 		cudaMallocHost(&Hostmap, (width*width)*sizeof(int));
@@ -46,21 +48,10 @@ int readInput(const char* infile, int B){
   				Hostmap[width*i + j] = INF;
   		}
   	}
-  	while (!feof (pFile))
+  	while (--m >= 0)
     {  
-		fscanf (pFile, "%d", &in); 
-		counter ++;
-		if(counter > 1){
-			if((counter-2) % 3 == 0){
-				i=in;
-			}
-			else if ((counter-2) % 3 == 1 ){
-				j=in;
-			}
-			else if((counter-2) % 3 == 2){
-				Hostmap[width*i + j] = in;
-			}
-      	}
+		fscanf(pFile, "%d %d %d", &i, &j, &in);
+		Hostmap[width*i + j] = in;
     }
     return width;
 }
@@ -123,7 +114,6 @@ __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 			}
 		}
 		devMap[g_mem_index] = shared_buffer[i][j];
-
 	}
 }
 
@@ -171,8 +161,6 @@ void Block_floydWarshall(int* devMap, int B, int width){
 
 	dim3 gridSize3(round, round);
 	dim3 blockSize3(BLKSIZE, BLKSIZE);
-    
-    //int d_N = N;
 
     printf("BLKSIZE = %d",BLKSIZE);
     printf("round = %d\n", round);
@@ -201,10 +189,10 @@ int main(int argc, char** argv) {
 	Block_floydWarshall(devMap, B, width);
 	cudaMemcpy(Hostmap, devMap, sizeof(int) * width * width, cudaMemcpyDeviceToHost);
 	cudaFree(devMap);
-	for(int i = 0; i < width*width; i++)
+	/*for(int i = 0; i < width*width; i++)
 		printf("%d ", Hostmap[i]);
 	printf("\n");
-	
+	*/
 	printf("Hostmap\n");
 	printf("%d %d\n", Hostmap[1], Hostmap[width*width-1]);
 	cudaError_t err = cudaGetLastError();

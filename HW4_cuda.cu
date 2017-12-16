@@ -22,11 +22,11 @@ int ceil(int a, int b){
 
 int readInput(const char* infile, int B){
 	FILE * pFile;
-	int in, counter=0;
+	int in;
 	int i, j, width;
 	pFile = fopen ( infile , "r" );
-	fscanf (pFile, "%d", &in);
-	N = in;
+	int m;
+	fscanf(pFile, "%d %d", &N, &m);
 	if(ceil(N, B) == N/B ){
 		width = N;
 		cudaMallocHost(&Hostmap, (width*width)*sizeof(int));
@@ -46,36 +46,26 @@ int readInput(const char* infile, int B){
   				Hostmap[width*i + j] = INF;
   		}
   	}
-  	while (!feof (pFile))
+  	while (--m >= 0)
     {  
-		fscanf (pFile, "%d", &in); 
-		counter ++;
-		if(counter > 1){
-			if((counter-2) % 3 == 0){
-				i=in;
-			}
-			else if ((counter-2) % 3 == 1 ){
-				j=in;
-			}
-			else if((counter-2) % 3 == 2){
-				Hostmap[width*i + j] = in;
-			}
-      	}
+		fscanf(pFile, "%d %d %d", &i, &j, &in);
+		Hostmap[width*i + j] = in;
     }
     return width;
 }
 
 
 __global__ void floyd_phaseI(int k, int *devMap, int B, int d_N){
-	__shared__ int shared_mem[32][32];
+	__shared__ int shared_mem[16][16];
 	int i = threadIdx.y;
 	int j = threadIdx.x;
-	int d_i = k * B + i;
-	int d_j = k * B + j;
+	int base = k * B;
+	int d_i = base + i;
+	int d_j = base + j;
 	int g_mem_index = d_i * d_N + d_j;
 	shared_mem[i][j] = devMap[g_mem_index];
 	__syncthreads();
-
+	#pragma unroll 16
 	for(int l = 0; l < B; l++){
 		if (shared_mem[i][l] + shared_mem[l][j] < shared_mem[i][j]){
 			shared_mem[i][j] = shared_mem[i][l] + shared_mem[l][j];
@@ -87,49 +77,54 @@ __global__ void floyd_phaseI(int k, int *devMap, int B, int d_N){
 
 __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 	if(blockIdx.x != k){
-		__shared__ int shared_mem[32][32], shared_buffer[32][32];
+		__shared__ int shared_mem[16][16], shared_buffer[16][16];
 		int i = threadIdx.y;
 		int j = threadIdx.x;
+		int base = k*B;
 		int d_i, d_j;
+		int g_mem_index = (i+base) * d_N + (j+base);
 		if(blockIdx.y == 0){ 	// row
-			d_i = k * B + threadIdx.y;
-			d_j = blockDim.x * blockIdx.x + threadIdx.x;//problem
+			d_i = base + threadIdx.y;
+			d_j = blockDim.x * blockIdx.x + threadIdx.x;
+			shared_mem[j][i] = devMap[g_mem_index];
+			g_mem_index = d_i * d_N + d_j;
+			shared_buffer[i][j] = devMap[g_mem_index];
 		}
 		else { 					// col
 			d_i = blockDim.x * blockIdx.x + threadIdx.y;
-			d_j = k * B + threadIdx.x;
+			d_j = base + threadIdx.x;
+			shared_mem[i][j] = devMap[g_mem_index];
+			g_mem_index = d_i * d_N + d_j;
+			shared_buffer[j][i] = devMap[g_mem_index];
 		}
-		
-		int g_mem_index = (i+B*k) * d_N + (j+B*k);
-		shared_mem[i][j] = devMap[g_mem_index];
-		g_mem_index = d_i * d_N + d_j;
-		shared_buffer[i][j] = devMap[g_mem_index];
 		__syncthreads();
 
 		if(blockIdx.y == 0){
+			#pragma unroll 16
 			for(int l = 0; l < B; l++){
-				if(shared_mem[i][l] + shared_buffer[l][j] < shared_buffer[i][j]){
-					shared_buffer[i][j] = shared_mem[i][l] + shared_buffer[l][j];
+				if(shared_mem[l][i] + shared_buffer[l][j] < shared_buffer[i][j]){
+					shared_buffer[i][j] = shared_mem[l][i] + shared_buffer[l][j];
 				}
 				__syncthreads();
 			}
+			devMap[g_mem_index] = shared_buffer[i][j];
 		}
 		else{
+			#pragma unroll 16
 			for(int l = 0; l < B; l++){
-				if(shared_buffer[i][l] + shared_mem[l][j] < shared_buffer[i][j]){
-					shared_buffer[i][j] = shared_buffer[i][l] + shared_mem[l][j];
+				if(shared_buffer[l][i] + shared_mem[l][j] < shared_buffer[j][i]){
+					shared_buffer[j][i] = shared_buffer[l][i] + shared_mem[l][j];
 				}
 				__syncthreads();
 			}
+			devMap[g_mem_index] = shared_buffer[j][i];
 		}
-		devMap[g_mem_index] = shared_buffer[i][j];
-
 	}
 }
 
 __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N){
 	if(blockIdx.x!= k && blockIdx.y!= k){
-		__shared__ int d_c[32][32], d_r[32][32];
+		__shared__ int d_c[16][16], d_r[16][16];
 		int base = k * B;
 		int d_i = blockDim.y * blockIdx.y + threadIdx.y;
 		int d_j = blockDim.x * blockIdx.x + threadIdx.x;
@@ -139,13 +134,14 @@ __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N){
 		int row_base = d_i * d_N + (base + j);
 		base = d_i * d_N + d_j;
 		d_r[i][j] = devMap[col_base];
-		d_c[i][j] = devMap[row_base];
+		d_c[j][i] = devMap[row_base];
 		int oldD = devMap[base];
 		__syncthreads();
 
 		int newD;
+		#pragma unroll 16
 		for (int t = 0; t < B; t++) {
-			newD = d_c[i][t] + d_r[t][j];
+			newD = d_c[t][i] + d_r[t][j];
 			if (newD < oldD)
 				oldD = newD;
 			__syncthreads();
@@ -171,8 +167,6 @@ void Block_floydWarshall(int* devMap, int B, int width){
 
 	dim3 gridSize3(round, round);
 	dim3 blockSize3(BLKSIZE, BLKSIZE);
-    
-    //int d_N = N;
 
     printf("BLKSIZE = %d",BLKSIZE);
     printf("round = %d\n", round);

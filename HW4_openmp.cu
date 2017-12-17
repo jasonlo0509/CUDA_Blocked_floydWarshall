@@ -1,23 +1,19 @@
 /***
  * Author:Yun-Chen Lo
- * File:cuda_debug.cu
+ * File:HW4_openmp.cu
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <cuda.h>
 #include <assert.h>
-
+#include <omp.h>
 
 #define INF 1000000000
-
 
 int *Hostmap; 	// host memory for input adjacent file
 int *devMap;	// device memory
 int N; 			// number of vertex
-
-clock_t begin_total, end_total, begin_I, end_I, begin_II, end_II, begin_III, end_III;
-clock_t total_time, I_time=0, II_time=0, III_time=0;
 
 
 int ceil(int a, int b){
@@ -60,28 +56,31 @@ int readInput(const char* infile, int B){
 
 
 __global__ void floyd_phaseI(int k, int *devMap, int B, int d_N){
-	__shared__ int shared_mem[16][16];
+	extern __shared__ int shared_mem[];
 	int i = threadIdx.y;
 	int j = threadIdx.x;
 	int base = k * B;
 	int d_i = base + i;
 	int d_j = base + j;
 	int g_mem_index = d_i * d_N + d_j;
-	shared_mem[i][j] = devMap[g_mem_index];
+	shared_mem[i*B + j] = devMap[g_mem_index];
 	__syncthreads();
 	#pragma unroll 16
 	for(int l = 0; l < B; l++){
-		if (shared_mem[i][l] + shared_mem[l][j] < shared_mem[i][j]){
-			shared_mem[i][j] = shared_mem[i][l] + shared_mem[l][j];
+		if (shared_mem[i*B + l] + shared_mem[l*B + j] < shared_mem[i*B + j]){
+			shared_mem[i*B + j] = shared_mem[i*B + l] + shared_mem[l*B + j];
 		}
 		__syncthreads();
 	}
-	devMap[g_mem_index] = shared_mem[i][j];
+	devMap[g_mem_index] = shared_mem[i*B + j];
 }
 
 __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
+	extern __shared__ int S[];
 	if(blockIdx.x != k){
-		__shared__ int shared_mem[16][16], shared_buffer[16][16];
+		//__shared__ int shared_mem[16][16], shared_buffer[16][16];
+		int *shared_mem = &S[0];
+		int *shared_buffer = &S[B*B];
 		int i = threadIdx.y;
 		int j = threadIdx.x;
 		int base = k*B;
@@ -90,45 +89,48 @@ __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 		if(blockIdx.y == 0){ 	// row
 			d_i = base + threadIdx.y;
 			d_j = blockDim.x * blockIdx.x + threadIdx.x;
-			shared_mem[j][i] = devMap[g_mem_index];
+			shared_mem[j*B + i] = devMap[g_mem_index];
 			g_mem_index = d_i * d_N + d_j;
-			shared_buffer[i][j] = devMap[g_mem_index];
+			shared_buffer[i*B + j] = devMap[g_mem_index];
 		}
 		else { 					// col
 			d_i = blockDim.x * blockIdx.x + threadIdx.y;
 			d_j = base + threadIdx.x;
-			shared_mem[i][j] = devMap[g_mem_index];
+			shared_mem[i*B + j] = devMap[g_mem_index];
 			g_mem_index = d_i * d_N + d_j;
-			shared_buffer[j][i] = devMap[g_mem_index];
+			shared_buffer[j*B + i] = devMap[g_mem_index];
 		}
 		__syncthreads();
 
 		if(blockIdx.y == 0){
 			#pragma unroll 16
 			for(int l = 0; l < B; l++){
-				if(shared_mem[l][i] + shared_buffer[l][j] < shared_buffer[i][j]){
-					shared_buffer[i][j] = shared_mem[l][i] + shared_buffer[l][j];
+				if(shared_mem[l*B + i] + shared_buffer[l*B + j] < shared_buffer[i*B +j]){
+					shared_buffer[i*B + j] = shared_mem[l*B +i] + shared_buffer[l*B +j];
 				}
 				__syncthreads();
 			}
-			devMap[g_mem_index] = shared_buffer[i][j];
+			devMap[g_mem_index] = shared_buffer[i*B +j];
 		}
 		else{
 			#pragma unroll 16
 			for(int l = 0; l < B; l++){
-				if(shared_buffer[l][i] + shared_mem[l][j] < shared_buffer[j][i]){
-					shared_buffer[j][i] = shared_buffer[l][i] + shared_mem[l][j];
+				if(shared_buffer[l*B +i] + shared_mem[l*B +j] < shared_buffer[j*B +i]){
+					shared_buffer[j*B +i] = shared_buffer[l*B +i] + shared_mem[l*B +j];
 				}
 				__syncthreads();
 			}
-			devMap[g_mem_index] = shared_buffer[j][i];
+			devMap[g_mem_index] = shared_buffer[j*B +i];
 		}
 	}
 }
 
 __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N){
+	extern __shared__ int S[];
 	if(blockIdx.x!= k && blockIdx.y!= k){
-		__shared__ int d_c[16][16], d_r[16][16];
+		//__shared__ int d_c[16][16], d_r[16][16];
+		int *d_c = &S[0];
+		int *d_r = &S[B*B];
 		int base = k * B;
 		int d_i = blockDim.y * blockIdx.y + threadIdx.y;
 		int d_j = blockDim.x * blockIdx.x + threadIdx.x;
@@ -137,15 +139,15 @@ __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N){
 		int col_base = (base + i) * d_N + d_j;
 		int row_base = d_i * d_N + (base + j);
 		base = d_i * d_N + d_j;
-		d_r[i][j] = devMap[col_base];
-		d_c[j][i] = devMap[row_base];
+		d_r[i*B + j] = devMap[col_base];
+		d_c[j*B + i] = devMap[row_base];
 		int oldD = devMap[base];
 		__syncthreads();
 
 		int newD;
 		#pragma unroll 16
 		for (int t = 0; t < B; t++) {
-			newD = d_c[t][i] + d_r[t][j];
+			newD = d_c[t*B + i] + d_r[t*B + j];
 			if (newD < oldD)
 				oldD = newD;
 			__syncthreads();
@@ -154,7 +156,7 @@ __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N){
 	}
 }
 
-void Block_floydWarshall(int* devMap, int B, int width){
+void Block_floydWarshall(int* Hostmap, int* devMap, int B, int width, int cpu_thread_id){
 	int k;
 	int round = ceil(N, B);
 	int BLKSIZE;
@@ -175,18 +177,9 @@ void Block_floydWarshall(int* devMap, int B, int width){
     printf("BLKSIZE = %d",BLKSIZE);
     printf("round = %d\n", round);
     for(k = 0; k<round; k++){
-    	begin_I = clock();
-    	floyd_phaseI<<<1, blockSize1>>>(k, devMap, BLKSIZE, width);
-    	end_I = clock();
-    	I_time += (end_I - begin_I);
-    	begin_II = clock();
-    	floyd_phaseII<<<gridSize2, blockSize2>>>(k, devMap, BLKSIZE, width);
-    	end_II = clock();
-    	II_time += (end_II - begin_II);
-    	begin_III = clock();
-    	floyd_phaseIII<<<gridSize3, blockSize3>>>(k, devMap, BLKSIZE, width);
-    	end_III = clock();
-    	III_time += (end_III - begin_III);
+    	floyd_phaseI<<<1, blockSize1, B*B*sizeof(int)>>>(k, devMap, BLKSIZE, width);
+    	floyd_phaseII<<<gridSize2, blockSize2, 2*B*B*sizeof(int)>>>(k, devMap, BLKSIZE, width);
+    	floyd_phaseIII<<<gridSize3, blockSize3, 2*B*B*sizeof(int)>>>(k, devMap, BLKSIZE, width);
     }
 }
 
@@ -198,28 +191,37 @@ void saveSolution(int* FinalMap, const char* outfile){
 }
 
 int main(int argc, char** argv) {
-//time
-	begin_total = clock();
-	
 	const char* infile = argv[1];
 	const char* outfile = argv[2];
 	int B = atoi(argv[3]);	//block size
 	int width;
 	width = readInput(infile, B);
+/* Assign GPU to process */
+	int num_cpus, num_gpus, cpu_thread_id, gpuid;
+	cudaGetDeviceCount(&num_gpus);
+	num_cpus = omp_get_max_threads();
+	printf("there is %d cpus and %d gpus\n", num_cpus, num_gpus);
+#pragma omp parallel shared(num_gpus) private(cpu_thread_id, gpuid)
+{
+	#pragma omp critical
+	{
+		cpu_thread_id = omp_get_thread_num();
+		cudaSetDevice(cpu_thread_id);
+		cudaGetDevice(&gpuid);
+		printf("cpu:%d <-> gpu:%d\n", cpu_thread_id, gpuid);
+	}
+}
+
+#pragma omp parallel shared(Hostmap) private(cpu_thread_id, gpuid)
+{
 	cudaMalloc(&devMap, width * width * sizeof(int));
 	cudaMemcpy(devMap, Hostmap, sizeof(int) * width * width, cudaMemcpyHostToDevice);
-	Block_floydWarshall(devMap, B, width);
+	cpu_thread_id = omp_get_thread_num();
+	Block_floydWarshall(Hostmap, devMap, B, width, cpu_thread_id);
 	cudaMemcpy(Hostmap, devMap, sizeof(int) * width * width, cudaMemcpyDeviceToHost);
 	cudaFree(devMap);
-	/*for(int i = 0; i < width*width; i++)
-		printf("%d ", Hostmap[i]);
-	printf("\n");
-	*/
-	printf("Hostmap\n");
-	printf("%d %d\n", Hostmap[1], Hostmap[width*width-1]);
-	cudaError_t err = cudaGetLastError();
-	if (err != cudaSuccess) 
-		    printf("Error: %s\n", cudaGetErrorString(err));
+}
+	
 	int *FinalMap;
 	cudaMallocHost(&FinalMap, (N*N)*sizeof(int));
 	for(int i = 0; i < width; i++){
@@ -229,13 +231,10 @@ int main(int argc, char** argv) {
 		}
 	}
 	saveSolution(FinalMap, outfile);
-//time
-	end_total = clock();
-	total_time = end_total - begin_total;
-	printf("total time = %lf\n", (double)(total_time) / CLOCKS_PER_SEC);
-	printf("phase I time = %lf\n", (double)(I_time) / CLOCKS_PER_SEC);
-	printf("phase II time = %lf\n", (double)(II_time) / CLOCKS_PER_SEC);
-	printf("phase III time = %lf\n", (double)(III_time) / CLOCKS_PER_SEC);
+
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) 
+		printf("Error: %s\n", cudaGetErrorString(err));
 
 	return 0;
 }

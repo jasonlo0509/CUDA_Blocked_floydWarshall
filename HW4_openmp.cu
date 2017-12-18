@@ -12,7 +12,6 @@
 #define INF 1000000000
 
 int *Hostmap; 	// host memory for input adjacent file
-int *devMap;	// device memory
 int N; 			// number of vertex
 
 
@@ -65,7 +64,7 @@ __global__ void floyd_phaseI(int k, int *devMap, int B, int d_N){
 	int g_mem_index = d_i * d_N + d_j;
 	shared_mem[i*B + j] = devMap[g_mem_index];
 	__syncthreads();
-	#pragma unroll 16
+	
 	for(int l = 0; l < B; l++){
 		if (shared_mem[i*B + l] + shared_mem[l*B + j] < shared_mem[i*B + j]){
 			shared_mem[i*B + j] = shared_mem[i*B + l] + shared_mem[l*B + j];
@@ -78,7 +77,6 @@ __global__ void floyd_phaseI(int k, int *devMap, int B, int d_N){
 __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 	extern __shared__ int S[];
 	if(blockIdx.x != k){
-		//__shared__ int shared_mem[16][16], shared_buffer[16][16];
 		int *shared_mem = &S[0];
 		int *shared_buffer = &S[B*B];
 		int i = threadIdx.y;
@@ -103,7 +101,6 @@ __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 		__syncthreads();
 
 		if(blockIdx.y == 0){
-			#pragma unroll 16
 			for(int l = 0; l < B; l++){
 				if(shared_mem[l*B + i] + shared_buffer[l*B + j] < shared_buffer[i*B +j]){
 					shared_buffer[i*B + j] = shared_mem[l*B +i] + shared_buffer[l*B +j];
@@ -113,7 +110,6 @@ __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 			devMap[g_mem_index] = shared_buffer[i*B +j];
 		}
 		else{
-			#pragma unroll 16
 			for(int l = 0; l < B; l++){
 				if(shared_buffer[l*B +i] + shared_mem[l*B +j] < shared_buffer[j*B +i]){
 					shared_buffer[j*B +i] = shared_buffer[l*B +i] + shared_mem[l*B +j];
@@ -125,13 +121,24 @@ __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 	}
 }
 
-__global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N){
+__global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N, int offset, int bound){
 	extern __shared__ int S[];
-	if(blockIdx.x!= k && blockIdx.y!= k){
-		//__shared__ int d_c[16][16], d_r[16][16];
+	
+	if(blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0 && threadIdx.y==0){
+		printf("Iteration[%d]\n", k);
+		for(int t_i = 0; t_i < d_N; t_i++){
+			for(int t_j = 0; t_j < d_N; t_j++){
+				printf("%d ", devMap[t_i*d_N + t_j]);
+			}
+			printf("\n");
+		}
+		printf("\n");
+	}
+	
+	if(blockIdx.x!= k && blockIdx.y!= k && blockIdx.y >= offset && blockIdx.y < bound){
 		int *d_c = &S[0];
 		int *d_r = &S[B*B];
-		int base = k * B;
+		int base = k*B;
 		int d_i = blockDim.y * blockIdx.y + threadIdx.y;
 		int d_j = blockDim.x * blockIdx.x + threadIdx.x;
 		int i = threadIdx.y;
@@ -140,14 +147,14 @@ __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N){
 		int row_base = d_i * d_N + (base + j);
 		base = d_i * d_N + d_j;
 		d_r[i*B + j] = devMap[col_base];
-		d_c[j*B + i] = devMap[row_base];
+		d_c[i*B + j] = devMap[row_base];
 		int oldD = devMap[base];
+
 		__syncthreads();
 
 		int newD;
-		#pragma unroll 16
 		for (int t = 0; t < B; t++) {
-			newD = d_c[t*B + i] + d_r[t*B + j];
+			newD = d_c[i*B + t] + d_r[t*B + j];
 			if (newD < oldD)
 				oldD = newD;
 			__syncthreads();
@@ -156,10 +163,15 @@ __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N){
 	}
 }
 
-void Block_floydWarshall(int* Hostmap, int* devMap, int B, int width, int cpu_thread_id){
+void Block_floydWarshall(int* Hostmap, int** ptr_arr, int B, int width, int cpu_thread_id){
 	int k;
 	int round = ceil(N, B);
 	int BLKSIZE;
+	int offset, bound, pos, size;
+	int *mymem, *othermem;
+	mymem = ptr_arr[cpu_thread_id];
+	othermem = ptr_arr[1-cpu_thread_id];
+
 	if(round == 1){
     	BLKSIZE = N;
     }
@@ -174,13 +186,33 @@ void Block_floydWarshall(int* Hostmap, int* devMap, int B, int width, int cpu_th
 	dim3 gridSize3(round, round);
 	dim3 blockSize3(BLKSIZE, BLKSIZE);
 
-    printf("BLKSIZE = %d",BLKSIZE);
-    printf("round = %d\n", round);
+    //printf("[%d]BLKSIZE = %d\n", cpu_thread_id, BLKSIZE);
+    //printf("round = %d\n", round);
+    
+    offset = (cpu_thread_id != 0)? ceil(round, 2) : 0;
+    bound = (cpu_thread_id != 0)? round : ceil(round, 2);
+    size = B * width * sizeof(int);
+
+    //printf("offset:%d, bound:%d, size:%d\n", offset, bound, size);
+    
     for(k = 0; k<round; k++){
-    	floyd_phaseI<<<1, blockSize1, B*B*sizeof(int)>>>(k, devMap, BLKSIZE, width);
-    	floyd_phaseII<<<gridSize2, blockSize2, 2*B*B*sizeof(int)>>>(k, devMap, BLKSIZE, width);
-    	floyd_phaseIII<<<gridSize3, blockSize3, 2*B*B*sizeof(int)>>>(k, devMap, BLKSIZE, width);
+    	#pragma omp barrier
+    	floyd_phaseI<<<1, blockSize1, B*B*sizeof(int)>>>(k, mymem, BLKSIZE, width);
+    	floyd_phaseII<<<gridSize2, blockSize2, 2*B*B*sizeof(int)>>>(k, mymem, BLKSIZE, width);
+    	floyd_phaseIII<<<gridSize3, blockSize3, 2*B*B*sizeof(int)>>>(k, mymem, BLKSIZE, width, offset, bound);
+    	pos = (k+1) * B * width;
+    	if(k < round - 1){
+    		if((k+1) >= offset && (k+1) < bound){
+    			printf("cpu(%d) pos = %d\n",cpu_thread_id, pos);
+    			cudaMemcpy(&othermem[pos], &mymem[pos], size, cudaMemcpyDeviceToDevice);
+    		}
+    	}
+    	else{
+    		//printf("o*B*w %d, size %d\n",offset* B * width, (bound-offset)*B*width);
+    		cudaMemcpy(&Hostmap[offset* B * width], &mymem[offset * B * width], (bound-offset)*B*width*sizeof(int), cudaMemcpyDeviceToHost);
+    	}
     }
+    
 }
 
 void saveSolution(int* FinalMap, const char* outfile){
@@ -193,14 +225,18 @@ void saveSolution(int* FinalMap, const char* outfile){
 int main(int argc, char** argv) {
 	const char* infile = argv[1];
 	const char* outfile = argv[2];
-	int B = atoi(argv[3]);	//block size
-	int width;
+	int B = atoi(argv[3]);			//block size
+	int width;						//width of the appended array
+	int *devMap;					//device memory
+	int* ptr_arr[2];				//ptr_arr that saves two device memory ptr 
 	width = readInput(infile, B);
-/* Assign GPU to process */
+	
+	/* Assign GPU to process */
 	int num_cpus, num_gpus, cpu_thread_id, gpuid;
 	cudaGetDeviceCount(&num_gpus);
 	num_cpus = omp_get_max_threads();
 	printf("there is %d cpus and %d gpus\n", num_cpus, num_gpus);
+
 #pragma omp parallel shared(num_gpus) private(cpu_thread_id, gpuid)
 {
 	#pragma omp critical
@@ -210,18 +246,22 @@ int main(int argc, char** argv) {
 		cudaGetDevice(&gpuid);
 		printf("cpu:%d <-> gpu:%d\n", cpu_thread_id, gpuid);
 	}
+	cudaMalloc(&devMap, width * width * sizeof(int));
+	cudaGetDevice(&gpuid);
+	printf("gpu(%d) d_ptr = %d\n", gpuid, devMap);
+	ptr_arr[cpu_thread_id] = devMap;
 }
 
-#pragma omp parallel shared(Hostmap) private(cpu_thread_id, gpuid)
+#pragma omp parallel shared(Hostmap, ptr_arr) private(cpu_thread_id, gpuid)
 {
-	cudaMalloc(&devMap, width * width * sizeof(int));
-	cudaMemcpy(devMap, Hostmap, sizeof(int) * width * width, cudaMemcpyHostToDevice);
 	cpu_thread_id = omp_get_thread_num();
-	Block_floydWarshall(Hostmap, devMap, B, width, cpu_thread_id);
-	cudaMemcpy(Hostmap, devMap, sizeof(int) * width * width, cudaMemcpyDeviceToHost);
-	cudaFree(devMap);
+	cudaMemcpy(ptr_arr[cpu_thread_id], Hostmap, sizeof(int) * width * width, cudaMemcpyHostToDevice);
+	Block_floydWarshall(Hostmap, ptr_arr, B, width, cpu_thread_id);
+	cudaMemcpy(Hostmap, ptr_arr[cpu_thread_id], sizeof(int) * width * width, cudaMemcpyDeviceToHost);
+	cudaFree(ptr_arr[cpu_thread_id]);
 }
-	
+
+	/* Final Saving of matrix */
 	int *FinalMap;
 	cudaMallocHost(&FinalMap, (N*N)*sizeof(int));
 	for(int i = 0; i < width; i++){
@@ -231,10 +271,11 @@ int main(int argc, char** argv) {
 		}
 	}
 	saveSolution(FinalMap, outfile);
-
+	cudaFreeHost(Hostmap);
+	cudaFreeHost(FinalMap);
 	cudaError_t err = cudaGetLastError();
 	if (err != cudaSuccess) 
 		printf("Error: %s\n", cudaGetErrorString(err));
-
+	
 	return 0;
 }

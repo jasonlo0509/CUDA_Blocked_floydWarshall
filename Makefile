@@ -6,7 +6,7 @@ LDFLAGS  := -lm
 
 MPILIBS  := -I/opt/intel/compilers_and_libraries_2017.3.191/linux/mpi/intel64/include -L/opt/intel/compilers_and_libraries_2017.3.191/linux/mpi/intel64/lib -lmpi
 
-EXES     := HW4_cuda cuda_debug HW4_openmp HW4_mpi
+EXES     := HW4_cuda cuda_debug offset_test HW4_openmp HW4_mpi
 
 alls: $(EXES)
 
@@ -17,6 +17,9 @@ HW4_cuda: HW4_cuda.cu
 	nvcc $(NVFLAGS) -Xcompiler="$(CXXFLAGS)" $(LDFLAGS) -o $@ $?
 
 cuda_debug: cuda_debug.cu
+	nvcc $(NVFLAGS) -Xcompiler="$(CXXFLAGS)" $(LDFLAGS) -o $@ $?
+
+offset_test: offset_test.cu
 	nvcc $(NVFLAGS) -Xcompiler="$(CXXFLAGS)" $(LDFLAGS) -o $@ $?
 
 HW4_openmp: HW4_openmp.cu

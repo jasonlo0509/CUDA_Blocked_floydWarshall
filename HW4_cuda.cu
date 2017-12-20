@@ -5,9 +5,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <fcntl.h>
 #include <cuda.h>
 #include <assert.h>
-
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #define INF 1000000000
 
@@ -22,12 +26,36 @@ int ceil(int a, int b){
 }
 
 int readInput(const char* infile, int B){
-	FILE * pFile;
-	int in;
+	int in=0;
 	int i, j, width;
-	pFile = fopen ( infile , "r" );
-	int m;
-	fscanf(pFile, "%d %d", &N, &m);
+	int fd = open(infile, O_RDONLY, (mode_t)0600);
+	struct stat fileInfo = {0};
+	if (fstat(fd, &fileInfo) == -1)
+    {
+        perror("Error getting the file size");
+        exit(EXIT_FAILURE);
+    }
+	printf("File size is %ji\n", (intmax_t)fileInfo.st_size);
+	char *map = (char *)mmap(0, fileInfo.st_size, PROT_READ, MAP_SHARED, fd, 0);
+	int start_i;
+	N = 5;
+	printf("map[0]:%d, map[1]:%d\n", map[0], map[1]);
+	for (i = 0; i < fileInfo.st_size; i++){
+        if(map[i] == ' ' || map[i] == '\n'){
+            if(map[i] == '\n'){
+                start_i = i;
+                break;
+            }
+            else{
+                N = in;
+            }
+            in = 0;
+        }
+        else{
+            in = (int)map[i]-(int)'0' + 10 * in;
+        }
+    }
+    printf("N:%d start_i:%d\n", N, start_i);
 	if(ceil(N, B) == N/B || ceil(N, B) == 1){
 		width = N;
 		cudaMallocHost(&Hostmap, (width*width)*sizeof(int));
@@ -47,10 +75,24 @@ int readInput(const char* infile, int B){
   				Hostmap[width*i + j] = INF;
   		}
   	}
-  	while (--m >= 0)
-    {  
-		fscanf(pFile, "%d %d %d", &i, &j, &in);
-		Hostmap[width*i + j] = in;
+  	int h_i=0, h_j=0;
+  	in = 0;
+  	for (i = start_i; i < fileInfo.st_size; i++){
+        if(map[i] == ' ' || map[i] == '\n'){
+            j++;
+            if(map[i] == '\n'){
+                j = 0;
+                Hostmap[h_i*width + h_j] = in;
+            }
+            else{
+                h_i = (j == 1)?in:h_i;
+                h_j = (j == 2)?in:h_j;
+            }
+            in = 0;
+        }
+        else{
+            in = (int)map[i]-(int)'0' + 10 * in;
+        }
     }
     return width;
 }
@@ -128,7 +170,6 @@ __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N){
 	extern __shared__ int S[];
 	if(blockIdx.x!= k && blockIdx.y!= k){
-		//__shared__ int d_c[16][16], d_r[16][16];
 		int *d_c = &S[0];
 		int *d_r = &S[B*B];
 		int base = k * B;
@@ -140,14 +181,14 @@ __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N){
 		int row_base = d_i * d_N + (base + j);
 		base = d_i * d_N + d_j;
 		d_r[i*B + j] = devMap[col_base];
-		d_c[j*B + i] = devMap[row_base];
+		d_c[i*B + j] = devMap[row_base];
 		int oldD = devMap[base];
 		__syncthreads();
 
 		int newD;
 		#pragma unroll 16
 		for (int t = 0; t < B; t++) {
-			newD = d_c[t*B + i] + d_r[t*B + j];
+			newD = d_c[i*B + t] + d_r[t*B + j];
 			if (newD < oldD)
 				oldD = newD;
 			__syncthreads();

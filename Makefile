@@ -6,12 +6,15 @@ LDFLAGS  := -lm
 
 MPILIBS  := -I/opt/intel/compilers_and_libraries_2017.3.191/linux/mpi/intel64/include -L/opt/intel/compilers_and_libraries_2017.3.191/linux/mpi/intel64/lib -lmpi
 
-EXES     := HW4_cuda cuda_debug offset_test HW4_openmp HW4_mpi
+EXES     := mmap_ex HW4_cuda cuda_debug offset_test HW4_openmp HW4_mpi
 
 alls: $(EXES)
 
 clean:
 	rm -f $(EXES)
+
+mmap_ex: mmap_ex.c
+	gcc -std=gnu99  $(LDFLAGS) -o $@ $?
 
 HW4_cuda: HW4_cuda.cu
 	nvcc $(NVFLAGS) -Xcompiler="$(CXXFLAGS)" $(LDFLAGS) -o $@ $?

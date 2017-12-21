@@ -108,7 +108,7 @@ __global__ void floyd_phaseI(int k, int *devMap, int B, int d_N){
 	int g_mem_index = d_i * d_N + d_j;
 	shared_mem[i*B + j] = devMap[g_mem_index];
 	__syncthreads();
-	#pragma unroll 16
+	//#pragma unroll 16
 	for(int l = 0; l < B; l++){
 		if (shared_mem[i*B + l] + shared_mem[l*B + j] < shared_mem[i*B + j]){
 			shared_mem[i*B + j] = shared_mem[i*B + l] + shared_mem[l*B + j];
@@ -145,7 +145,7 @@ __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 		__syncthreads();
 
 		if(blockIdx.y == 0){
-			#pragma unroll 16
+			//#pragma unroll 16
 			for(int l = 0; l < B; l++){
 				if(shared_mem[l*B + i] + shared_buffer[l*B + j] < shared_buffer[i*B +j]){
 					shared_buffer[i*B + j] = shared_mem[l*B +i] + shared_buffer[l*B +j];
@@ -155,7 +155,7 @@ __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 			devMap[g_mem_index] = shared_buffer[i*B +j];
 		}
 		else{
-			#pragma unroll 16
+			//#pragma unroll 16
 			for(int l = 0; l < B; l++){
 				if(shared_buffer[l*B +i] + shared_mem[l*B +j] < shared_buffer[j*B +i]){
 					shared_buffer[j*B +i] = shared_buffer[l*B +i] + shared_mem[l*B +j];
@@ -167,33 +167,101 @@ __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 	}
 }
 
-__global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N){
+__global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N, int round, int round_div_2){
 	extern __shared__ int S[];
-	if(blockIdx.x!= k && blockIdx.y!= k){
-		int *d_c = &S[0];
-		int *d_r = &S[B*B];
-		int base = k * B;
-		int d_i = blockDim.y * blockIdx.y + threadIdx.y;
-		int d_j = blockDim.x * blockIdx.x + threadIdx.x;
-		int i = threadIdx.y;
-		int j = threadIdx.x;
-		int col_base = (base + i) * d_N + d_j;
-		int row_base = d_i * d_N + (base + j);
-		base = d_i * d_N + d_j;
-		d_r[i*B + j] = devMap[col_base];
-		d_c[i*B + j] = devMap[row_base];
-		int oldD = devMap[base];
-		__syncthreads();
+	int *d_c_0 = &S[0];
+	int *d_c_1 = &S[1*B*B];
+	int *d_r_0 = &S[2*B*B];
+	int *d_r_1 = &S[3*B*B];
+	int block_base_x, block_base_y;
+	if(blockIdx.x >= k){
+		block_base_x = 1;
+	}else{
+		block_base_x = 0;
+	}
+	if(blockIdx.y >= k){
+		block_base_y = 1;
+	}
+	else{
+		block_base_y = 0;
+	}
+	int block_x_0, block_x_1, block_x_2, block_x_3;
+	block_x_0 = block_base_x + blockIdx.x;
+	block_x_1 = block_x_0 + round_div_2; 
+	printf("blockdim%d\n", blockDim.x);
+	if(blockIdx.x < k && block_x_1 >= k){
+		block_x_1 = block_x_1 + 1;
+	}
+	int block_y_0, block_y_1, block_y_2, block_y_3;
+	block_y_0 = block_base_y + blockIdx.y;
+	block_y_2 = block_y_0 + round_div_2;
+	if(blockIdx.y < k && block_y_2 >= k){
+		block_y_2 =  block_y_2 + 1;
+	}
+	int d_i_0 = block_y_0 * B + threadIdx.y;
+	int d_i_1 = d_i_0;
+	int d_i_2 = block_y_2 * B + threadIdx.y;
+	int d_i_3 = d_i_2;
+	int d_j_0 = block_x_0 * B + threadIdx.x;
+	int d_j_1 = block_x_1 * B + threadIdx.x;
+	int d_j_2 = d_j_0;
+	int d_j_3 = d_j_1;
+	
+	int i = threadIdx.y;
+	int j = threadIdx.x;
+	int base = k * B;
+	int col_base_0 = (base + i) * d_N + d_j_0;
+	int col_base_1 = (base + i) * d_N + d_j_1;
+	int row_base_0 = d_i_0 * d_N + (base + j);
+	int row_base_1 = d_i_2 * d_N + (base + j);
+	int oldD_0, oldD_1, oldD_2, oldD_3;
+	if(block_x_1 < round ){
+		d_r_1[i*B + j] = devMap[col_base_1];
+		d_c_1[i*B + j] = devMap[row_base_1];
+		oldD_1 = devMap[d_i_1*d_N + d_j_1];
+		oldD_2 = devMap[d_i_2*d_N + d_j_2];
+		oldD_3 = devMap[d_i_3*d_N + d_j_3];
+	}
+	d_r_0[i*B + j] = devMap[col_base_0];
+	d_c_0[i*B + j] = devMap[row_base_0];
+	oldD_0 = devMap[d_i_0*d_N + d_j_0];
+	
 
-		int newD;
-		#pragma unroll 16
+	__syncthreads();
+	
+	int newD_0, newD_1, newD_2, newD_3;
+	printf("[%d]blockx0:%d blocky0:%d blockx1:%dblocky3:%d\n", k, block_x_0, block_y_0,block_x_1, block_y_2);
+
+	if(block_x_1>=round || block_y_2 >= round){
+		printf("hello\n");
 		for (int t = 0; t < B; t++) {
-			newD = d_c[i*B + t] + d_r[t*B + j];
-			if (newD < oldD)
-				oldD = newD;
+			newD_0 = d_c_0[i*B + t] + d_r_0[t*B + j];
+			if (newD_0 < oldD_0)
+				oldD_0 = newD_0;
 			__syncthreads();
 		}
-		devMap[base] = oldD;
+		devMap[d_i_0 * d_N + d_j_0] = oldD_0;
+	}
+	else{
+		for (int t = 0; t < B; t++) {
+			newD_0 = d_c_0[i*B + t] + d_r_0[t*B + j];
+			newD_1 = d_c_0[i*B + t] + d_r_1[t*B + j];
+			newD_2 = d_c_1[i*B + t] + d_r_0[t*B + j];
+			newD_3 = d_c_1[i*B + t] + d_r_1[t*B + j];
+			if (newD_0 < oldD_0)
+				oldD_0 = newD_0;
+			if (newD_1 < oldD_1)
+				oldD_1 = newD_1;
+			if (newD_2 < oldD_2)
+				oldD_2 = newD_2;
+			if (newD_3 < oldD_3)
+				oldD_3 = newD_3;
+			__syncthreads();
+		}
+		devMap[d_i_0 * d_N + d_j_0] = oldD_0;
+		devMap[d_i_1 * d_N + d_j_1] = oldD_1;
+		devMap[d_i_2 * d_N + d_j_2] = oldD_2;
+		devMap[d_i_3 * d_N + d_j_3] = oldD_3;
 	}
 }
 
@@ -212,15 +280,15 @@ void Block_floydWarshall(int* devMap, int B, int width){
     dim3 gridSize2(round, 2);
     dim3 blockSize2(BLKSIZE, BLKSIZE);
 
-	dim3 gridSize3(round, round);
+	dim3 gridSize3(ceil((round-1), 2), ceil((round-1), 2));
 	dim3 blockSize3(BLKSIZE, BLKSIZE);
 
     printf("BLKSIZE = %d",BLKSIZE);
-    printf("round = %d\n", round);
+    printf("round = %d %d\n", round,ceil((round-1), 2));
     for(k = 0; k<round; k++){
     	floyd_phaseI<<<1, blockSize1, B*B*sizeof(int)>>>(k, devMap, BLKSIZE, width);
     	floyd_phaseII<<<gridSize2, blockSize2, 2*B*B*sizeof(int)>>>(k, devMap, BLKSIZE, width);
-    	floyd_phaseIII<<<gridSize3, blockSize3, 2*B*B*sizeof(int)>>>(k, devMap, BLKSIZE, width);
+    	floyd_phaseIII<<<gridSize3, blockSize3, 4*B*B*sizeof(int)>>>(k, devMap, BLKSIZE, width, round, ceil((round-1),2));
     }
 }
 

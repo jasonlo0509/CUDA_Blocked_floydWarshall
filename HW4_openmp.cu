@@ -226,7 +226,7 @@ void Block_floydWarshall(int* Hostmap, int** ptr_arr, int B, int width, int cpu_
     save_border = offset * BLKSIZE * width;
     save_size = (bound-offset)*BLKSIZE*width;
 
-    printf("offset:%d, bound:%d, size:%d, ***: %d\n", offset, bound, size, (bound-offset)*B*width);
+    printf("offset:%d, bound:%d, size:%d, ***: %d\n", offset, bound, size, (bound-offset)*BLKSIZE*width);
     
     for(k = 0; k<round; k++){
     	#pragma omp barrier

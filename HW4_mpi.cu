@@ -160,61 +160,31 @@ __global__ void floyd_phaseII(int k, int *devMap, int B, int d_N){
 
 __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N, int offset, int bound, int round, int myrank){
 	extern __shared__ int S[];
-	if(k+1 >= offset && k+1 < bound || k==round-1){
-		if(blockIdx.x!= k && blockIdx.y!= k && blockIdx.y >= offset && blockIdx.y < bound){
-			int *d_c = &S[0];
-			int *d_r = &S[B*B];
-			int base = k*B;
-			int d_i = blockDim.y * blockIdx.y + threadIdx.y;
-			int d_j = blockDim.x * blockIdx.x + threadIdx.x;
-			int i = threadIdx.y;
-			int j = threadIdx.x;
-			int col_base = (base + i) * d_N + d_j;
-			int row_base = d_i * d_N + (base + j);
-			base = d_i * d_N + d_j;
-			d_r[i*B + j] = devMap[col_base];
-			d_c[i*B + j] = devMap[row_base];
-			int oldD = devMap[base];
+	if(blockIdx.x!= k && blockIdx.y!= k && blockIdx.y >= offset && blockIdx.y < bound){
+		int *d_c = &S[0];
+		int *d_r = &S[B*B];
+		int base = k*B;
+		int d_i = blockDim.y * blockIdx.y + threadIdx.y;
+		int d_j = blockDim.x * blockIdx.x + threadIdx.x;
+		int i = threadIdx.y;
+		int j = threadIdx.x;
+		int col_base = (base + i) * d_N + d_j;
+		int row_base = d_i * d_N + (base + j);
+		base = d_i * d_N + d_j;
+		d_r[i*B + j] = devMap[col_base];
+		d_c[i*B + j] = devMap[row_base];
+		int oldD = devMap[base];
 
+		__syncthreads();
+
+		int newD;
+		for (int t = 0; t < B; t++) {
+			newD = d_c[i*B + t] + d_r[t*B + j];
+			if (newD < oldD)
+				oldD = newD;
 			__syncthreads();
-
-			int newD;
-			for (int t = 0; t < B; t++) {
-				newD = d_c[i*B + t] + d_r[t*B + j];
-				if (newD < oldD)
-					oldD = newD;
-				__syncthreads();
-			}
-			devMap[base] = oldD;
 		}
-	}
-	else{
-		if(blockIdx.x!= k && blockIdx.y!= k && ((blockIdx.y >= offset && blockIdx.y < bound) || blockIdx.y == k+1)){
-			int *d_c = &S[0];
-			int *d_r = &S[B*B];
-			int base = k*B;
-			int d_i = blockDim.y * blockIdx.y + threadIdx.y;
-			int d_j = blockDim.x * blockIdx.x + threadIdx.x;
-			int i = threadIdx.y;
-			int j = threadIdx.x;
-			int col_base = (base + i) * d_N + d_j;
-			int row_base = d_i * d_N + (base + j);
-			base = d_i * d_N + d_j;
-			d_r[i*B + j] = devMap[col_base];
-			d_c[i*B + j] = devMap[row_base];
-			int oldD = devMap[base];
-
-			__syncthreads();
-
-			int newD;
-			for (int t = 0; t < B; t++) {
-				newD = d_c[i*B + t] + d_r[t*B + j];
-				if (newD < oldD)
-					oldD = newD;
-				__syncthreads();
-			}
-			devMap[base] = oldD;
-		}
+		devMap[base] = oldD;
 	}
 }
 
@@ -238,8 +208,9 @@ void Block_floydWarshall(int* Hostmap, int* devMap, int B, int width, int myrank
 	int k;
 	int round = ceil(N, B);
 	int BLKSIZE;
-	int offset, bound, size, save_border, pass_size;
+	int offset, bound, size, save_border, pass_size, pos;
 	int write_offset, save_size;
+	MPI_Status status;
 
 	if(round == 1){
     	BLKSIZE = N;
@@ -260,18 +231,32 @@ void Block_floydWarshall(int* Hostmap, int* devMap, int B, int width, int myrank
     
     offset = (myrank!= 0)? ceil(round, 2) : 0;
     bound = (myrank != 0)? round : ceil(round, 2);
-    size = BLKSIZE * width * sizeof(int);
+    size = BLKSIZE * width;
     save_border = offset * BLKSIZE * width;
     pass_size = (bound-offset)*BLKSIZE*width;
 
     printf("offset:%d, bound:%d, size:%d, ***: %d\n", offset, bound, size, (bound-offset)*B*width);
     
     for(k = 0; k<round; k++){
+    	MPI_Barrier(MPI_COMM_WORLD);
     	floyd_phaseI<<<1, blockSize1, B*B*sizeof(int)>>>(k, devMap, BLKSIZE, width);
     	floyd_phaseII<<<gridSize2, blockSize2, 2*B*B*sizeof(int)>>>(k, devMap, BLKSIZE, width);
     	floyd_phaseIII<<<gridSize3, blockSize3, 2*B*B*sizeof(int)>>>(k, devMap, BLKSIZE, width, offset, bound, round, myrank);
+    	pos = (k+1) * B * width;
+    	if(k < round - 1){
+    		if((k+1) >= offset && (k+1) < bound){
+    			cudaMemcpy(&Hostmap[pos], &devMap[pos], size*sizeof(int), cudaMemcpyDeviceToHost);
+    			MPI_Send(&Hostmap[pos], size, MPI_INT, 1-myrank, 0, MPI_COMM_WORLD);
+    		}
+    		else{
+    			MPI_Recv(&Hostmap[pos], size, MPI_INT, 1-myrank, 0, MPI_COMM_WORLD, &status);
+    			cudaMemcpy(&devMap[pos], &Hostmap[pos], size* sizeof(int), cudaMemcpyHostToDevice);
+    		}
+    	}
+    	else{
+    		cudaMemcpy(&Hostmap[save_border], &devMap[save_border], pass_size*sizeof(int), cudaMemcpyDeviceToHost);
+    	}
     }
-    cudaMemcpy(&Hostmap[save_border], &devMap[save_border], pass_size*sizeof(int), cudaMemcpyDeviceToHost);
     /* Final Saving of matrix */
 	int *FinalMap;
 	cudaMallocHost(&FinalMap, (N*N)*sizeof(int));
@@ -283,8 +268,9 @@ void Block_floydWarshall(int* Hostmap, int* devMap, int B, int width, int myrank
 	}
 	write_offset = offset * BLKSIZE * N;
 	save_size = (bound-offset) * BLKSIZE * N;
-	if(write_offset + save_size > N*N){
+	if(write_offset + save_size > N*N-1){
 		save_size = N*N - write_offset;
+		printf("kkkkkkkkkk\n");
 	}
 	MPI_Barrier(MPI_COMM_WORLD);
     MPI_SAVE(FinalMap, outfile, myrank, write_offset, save_size);
@@ -304,14 +290,21 @@ int main(int argc, char** argv) {
 
 	int *devMap;			//device memory
 	int width;				//width of the appended array
-
+	int gpuid;
 	width = readInput(infile, B);
     
     cudaSetDevice(myrank);
+    cudaGetDevice(&gpuid);
+    cudaDeviceEnablePeerAccess (1- gpuid,0);
+    printf("cpu:%d <-> gpu:%d\n", myrank, gpuid);
     cudaMalloc(&devMap, width * width * sizeof(int));
     cudaMemcpy(devMap, Hostmap, sizeof(int) * width * width, cudaMemcpyHostToDevice);
-    Block_floydWarshall(Hostmap, devMap, B, width, myrank, outfile);
     
+    Block_floydWarshall(Hostmap, devMap, B, width, myrank, outfile);
+    cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) 
+	printf("Error: %s\n", cudaGetErrorString(err));
+
     MPI_Barrier(MPI_COMM_WORLD);
     MPI_Finalize(); 
     printf("Number of tasks= %d My rank= %d devptr = %d\n", nprocs, myrank, devMap);

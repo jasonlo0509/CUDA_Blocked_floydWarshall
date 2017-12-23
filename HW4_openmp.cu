@@ -244,7 +244,6 @@ void Block_floydWarshall(int* Hostmap, int** ptr_arr, int B, int width, int cpu_
     		cudaMemcpy(&Hostmap[save_border], &mymem[save_border], save_size*sizeof(int), cudaMemcpyDeviceToHost);
     	}
     }
-    
 }
 
 void saveSolution(int* FinalMap, const char* outfile){

@@ -38,7 +38,6 @@ int readInput(const char* infile, int B){
 	printf("File size is %ji\n", (intmax_t)fileInfo.st_size);
 	char *map = (char *)mmap(0, fileInfo.st_size, PROT_READ, MAP_SHARED, fd, 0);
 	int start_i;
-	N = 5;
 	printf("map[0]:%d, map[1]:%d\n", map[0], map[1]);
 	for (i = 0; i < fileInfo.st_size; i++){
         if(map[i] == ' ' || map[i] == '\n'){
@@ -55,14 +54,27 @@ int readInput(const char* infile, int B){
             in = (int)map[i]-(int)'0' + 10 * in;
         }
     }
+
     printf("N:%d start_i:%d\n", N, start_i);
 	if(ceil(N, B) == N/B || ceil(N, B) == 1){
-		width = N;
-		cudaMallocHost(&Hostmap, (width*width)*sizeof(int));
+		if(ceil(N, B) % 2 == 0){
+			width = N + B;
+			cudaMallocHost(&Hostmap, (width*width)*sizeof(int));
+		}
+		else{
+			width = N;
+			cudaMallocHost(&Hostmap, (width*width)*sizeof(int));
+		}
 	}
 	else{
-		width = ceil(N, B) * B;
-		cudaMallocHost(&Hostmap, (width*width)*sizeof(int));
+		if(ceil(N, B) % 2 == 0){
+			width = ceil(N, B) * B + B;
+			cudaMallocHost(&Hostmap, (width*width)*sizeof(int));
+		}
+		else{
+			width = ceil(N, B) * B;
+			cudaMallocHost(&Hostmap, (width*width)*sizeof(int));
+		}
 	}
 	printf("width = %d\n ", width);
 	for(i=0; i<width; i++){
@@ -188,7 +200,7 @@ __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N, int round, in
 	int block_x_0, block_x_1, block_x_2, block_x_3;
 	block_x_0 = block_base_x + blockIdx.x;
 	block_x_1 = block_x_0 + round_div_2; 
-	printf("blockdim%d\n", blockDim.x);
+	//printf("blockdim%d\n", blockDim.x);
 	if(blockIdx.x < k && block_x_1 >= k){
 		block_x_1 = block_x_1 + 1;
 	}
@@ -206,7 +218,7 @@ __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N, int round, in
 	int d_j_1 = block_x_1 * B + threadIdx.x;
 	int d_j_2 = d_j_0;
 	int d_j_3 = d_j_1;
-	
+	//printf("i, j = [%d, %d]| [%d, %d]\n", d_i_0, d_j_0, d_i_2, d_j_1);
 	int i = threadIdx.y;
 	int j = threadIdx.x;
 	int base = k * B;
@@ -215,7 +227,7 @@ __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N, int round, in
 	int row_base_0 = d_i_0 * d_N + (base + j);
 	int row_base_1 = d_i_2 * d_N + (base + j);
 	int oldD_0, oldD_1, oldD_2, oldD_3;
-	if(block_x_1 < round ){
+	if(block_x_1 < round && block_y_2 < round){
 		d_r_1[i*B + j] = devMap[col_base_1];
 		d_c_1[i*B + j] = devMap[row_base_1];
 		oldD_1 = devMap[d_i_1*d_N + d_j_1];
@@ -230,10 +242,10 @@ __global__ void floyd_phaseIII(int k, int *devMap, int B, int d_N, int round, in
 	__syncthreads();
 	
 	int newD_0, newD_1, newD_2, newD_3;
-	printf("[%d]blockx0:%d blocky0:%d blockx1:%dblocky3:%d\n", k, block_x_0, block_y_0,block_x_1, block_y_2);
+	//printf("[%d]blockx0:%d blocky0:%d blockx1:%dblocky2:%d\n", k, block_x_0, block_y_0,block_x_1, block_y_2);
 
 	if(block_x_1>=round || block_y_2 >= round){
-		printf("hello\n");
+		//printf("hello\n");
 		for (int t = 0; t < B; t++) {
 			newD_0 = d_c_0[i*B + t] + d_r_0[t*B + j];
 			if (newD_0 < oldD_0)
@@ -275,12 +287,16 @@ void Block_floydWarshall(int* devMap, int B, int width){
     else{
     	BLKSIZE = B;
     }
+
+    if(round%2==0){
+    	round++;
+    }
     dim3 blockSize1(BLKSIZE, BLKSIZE);
 
     dim3 gridSize2(round, 2);
     dim3 blockSize2(BLKSIZE, BLKSIZE);
 
-	dim3 gridSize3(ceil((round-1), 2), ceil((round-1), 2));
+	dim3 gridSize3((ceil((round-1), 2)), ceil((round-1), 2));
 	dim3 blockSize3(BLKSIZE, BLKSIZE);
 
     printf("BLKSIZE = %d",BLKSIZE);
